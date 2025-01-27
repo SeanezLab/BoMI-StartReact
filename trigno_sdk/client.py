@@ -33,6 +33,7 @@ import json
 import struct
 import socket
 from io import StringIO
+import time
 
 from .datastructure import DSChannel, EMGSensor, EMGSensorMeta
 
@@ -88,6 +89,7 @@ class TrignoClient:
         "host_ip",
         "command_sock",
         "emg_data_sock",
+        "aux_data_sock",
         "sensors",
         "sensor_idx",
         "n_sensors",
@@ -108,15 +110,28 @@ class TrignoClient:
     )
 
     AVANTI_MODES = AVANTI_MODES
-
+    
     def __init__(self, host_ip: str = IP_ADDR):
         self.connected = False
         self.host_ip = host_ip
         self._init_state()
 
+        # Initialize all attributes that might be accessed later
+        self.backwards_compatibility = None
+        self.upsampling = None
+        self.frame_interval = None
+        self.max_samples_emg = None
+        self.emg_sample_rate = None
+        self.max_samples_aux = None
+        self.aux_sample_rate = None
+        self.endianness = None
+        self.base_firmware = None
+        self.base_serial = None
+
     def _init_state(self):
         self.command_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.emg_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         self.sensors: List[EMGSensor | None] = [None] * 17  # use 1 indexing
         self.sensor_idx: List[int] = []
@@ -136,7 +151,7 @@ class TrignoClient:
             _class=self.__class__.__name__,
             _id=id(self) & 0xFFFFFF,
             _attrs=" ".join(
-                "{}={!r}".format(k, getattr(self, k)) for k in sorted(self.__slots__)
+                "{}={!r}".format(k, getattr(self, k, 'N/A')) for k in sorted(self.__slots__)
             ),
         )
 
@@ -150,28 +165,28 @@ class TrignoClient:
         self.stop_stream()
         self.command_sock.close()
         self.emg_data_sock.close()
+        if hasattr(self, 'aux_data_sock'):
+            self.aux_data_sock.close()
         self._init_state()
         self.connected = False
         _print("Disconnected")
 
     def connect(self) -> str:
-        """Called once during init to setup base station.
-
-        Set little endian
-        Sets backwards compatibility off (resample lower Fs channels to the highest Fs used)
-
-        Returns error string if failed to connect.
-        """
         if not self.connected:
             try:
                 self.command_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.emg_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
                 self.command_sock.settimeout(1)
                 self.command_sock.connect((self.host_ip, COMMAND_PORT))
                 self.command_sock.settimeout(5)
                 buf = recv(self.command_sock)
                 _print(buf.decode())
+
                 self.emg_data_sock.connect((self.host_ip, EMG_DATA_PORT))
+                self.aux_data_sock.connect((self.host_ip, AUX_DATA_PORT))
+
                 self.connected = True
             except TimeoutError as e:
                 err_str = "Failed to connect to Base Station: " + str(e)
@@ -181,28 +196,19 @@ class TrignoClient:
         self.connected = True
         cmd = lambda _cmd: self.send_cmd(_cmd).decode()
 
-        # Change settings
-        assert cmd("ENDIAN LITTLE") == "OK"  # Use little endian
-        assert cmd("BACKWARDS COMPATIBILITY OFF") == "OK"
+        # Ensure backwards compatibility off
+        response = cmd("BACKWARDS COMPATIBILITY OFF")
+        if response != "OK":
+            _print(f"Warning: BACKWARDS COMPATIBILITY OFF command returned '{response}'")
 
-        ### Queries
-        self.backwards_compatibility = cmd("BACKWARDS COMPATIBILITY?")
-        self.upsampling = cmd("UPSAMPLING?")
-
-        # Trigno System frame interval, which is the length in time between frames
+        # Retrieve the correct frame interval and calculate rates based on mode 67
         self.frame_interval = float(cmd("FRAME INTERVAL?"))
-        # expected maximum samples per frame for EMG channels. Divide by the frame interval to get expected EMG sample rate
-        self.max_samples_emg = float(cmd("MAX SAMPLES EMG?"))
-        self.emg_sample_rate = self.max_samples_emg / self.frame_interval
 
-        # expected maximum samples per frame for AUX channels. Divide by the frame interval to get the expected AUX samples rate
-        self.max_samples_aux = float(cmd("MAX SAMPLES AUX?"))
-        self.aux_sample_rate = self.max_samples_aux / self.frame_interval
+        self.emg_sample_rate = 1482  # Fixed sampling rate for EMG
+        self.aux_sample_rate = 74  # Fixed sampling rate for AUX data (orientation)
 
         self.endianness = cmd("ENDIANNESS?")
-        # firmware version of the connected base station
         self.base_firmware = cmd("BASE FIRMWARE?")
-        # firmware version of the connected base station
         self.base_serial = cmd("BASE SERIAL?")
 
         self.query_devices()
@@ -210,25 +216,18 @@ class TrignoClient:
 
     def query_device(self, i: int):
         """
-        Checks for devices connected to the base and updates `self.sensors`
-        Also updates some settings
-            - Force mode 40 (EMG only at 2146 Hz)
+        Checks for devices connected to the base and updates `self.sensors`.
+        Updates mode to 67 (1 EMG + 4 AUX channels).
         """
         assert self.connected
 
         cmd = lambda _cmd: self.send_cmd(_cmd).decode()
 
-        ## Only look at PAIRED and ACTIVE sensors
-        if cmd(f"SENSOR {i} PAIRED?") == "NO":
-            return
-
-        if cmd(f"SENSOR {i} ACTIVE?") == "NO":
+        if cmd(f"SENSOR {i} PAIRED?") == "NO" or cmd(f"SENSOR {i} ACTIVE?") == "NO":
             return
 
         _type = cmd(f"SENSOR {i} TYPE?")
-        # Force mode 40: EMG (2148Hz)
-        res = cmd(f"SENSOR {i} SETMODE 40")
-        _print(res, self.AVANTI_MODES[40])
+        res = cmd(f"SENSOR {i} SETMODE 67")  # Change mode to 67
         _mode = int(cmd(f"SENSOR {i} MODE?"))
 
         _serial = cmd(f"SENSOR {i} SERIAL?")
@@ -237,17 +236,16 @@ class TrignoClient:
         aux_channels = int(cmd(f"SENSOR {i} AUXCHANNELCOUNT?"))
         start_idx = int(cmd(f"SENSOR {i} STARTINDEX?"))
 
-        channel_count = int(cmd(f"SENSOR {i} CHANNELCOUNT?"))
-        channels = []
-        for j in range(1, channel_count + 1):
-            channels.append(
-                DSChannel(
-                    gain=float(cmd(f"SENSOR {i} CHANNEL {j} GAIN?")),
-                    samples=int(cmd(f"SENSOR {i} CHANNEL {j} SAMPLES?")),
-                    rate=float(cmd(f"SENSOR {i} CHANNEL {j} RATE?")),
-                    units=cmd(f"SENSOR {i} CHANNEL {j} UNITS?"),
-                )
+        channel_count = emg_channels + aux_channels
+        channels = [
+            DSChannel(
+                gain=float(cmd(f"SENSOR {i} CHANNEL {j} GAIN?")),
+                samples=int(cmd(f"SENSOR {i} CHANNEL {j} SAMPLES?")),
+                rate=float(cmd(f"SENSOR {i} CHANNEL {j} RATE?")),
+                units=cmd(f"SENSOR {i} CHANNEL {j} UNITS?"),
             )
+            for j in range(1, channel_count + 1)
+        ]
 
         return EMGSensor(
             serial=_serial,
@@ -300,6 +298,17 @@ class TrignoClient:
         buf = recv_sz(self.emg_data_sock, 4 * 16)  # 16 devices, 4 byte float
         return struct.unpack("<ffffffffffffffff", buf)
 
+    def recv_aux(self) -> Tuple[float, ...]:
+        """Receive one AUX frame from the sensor."""
+        if not hasattr(self, 'aux_data_sock') or not self.aux_data_sock:
+            raise ConnectionError("AUX data socket is not connected.")
+
+        # Each sensor provides 4 channels of AUX data at 32-bit (4 bytes each)
+        packet_size = 4 * (self.n_sensors * 4)  # 4 bytes per value, 4 values per sensor
+
+        buf = recv_sz(self.aux_data_sock, packet_size)
+        return struct.unpack(f"<{4 * self.n_sensors}f", buf)
+
     def handle_stream(self, queue: Queue[Tuple[float]], savedir: Path):
         """
         If `queue` is passed, append data into the queue.
@@ -315,24 +324,26 @@ class TrignoClient:
         self._worker_thread.start()
 
     def stream_worker(self, queue: Queue[Tuple[float]], savedir: Path = None):
-        """
-        Stream worker calls `recv_emg` continuously until `self.streaming = False`
-        """
-        if not savedir:
-            while not self._done_streaming.is_set():
-                queue.put(self.recv_emg())
-        else:
-            with open(Path(savedir) / "trigno_emg.csv", "w") as fp:
-                while not self._done_streaming.is_set():
-                    try:
-                        emg = self.recv_emg()
-                    except struct.error as e:
-                        _print("Failed to parse packet", e)
-                        continue
-                    queue.put(emg)
-                    fp.write(",".join([str(v) for v in emg]) + "\n")
+        """Stream worker handling EMG and AUX data separately."""
 
-            self.save_meta(savedir / "trigno_meta.json")
+        with open(savedir / "trigno_emg.csv", "w") as emg_fp, open(savedir / "trigno_aux.csv", "w") as aux_fp:
+            while not self._done_streaming.is_set():
+                try:
+                    emg_data = self.recv_emg()
+                    aux_data = self.recv_aux()
+                    timestamp = default_timer()
+                except struct.error as e:
+                    _print("Failed to parse packet", e)
+                    continue
+
+                queue.put((timestamp, emg_data))  # Only EMG data goes to queue
+
+                # Save EMG and AUX data with correct floating point precision
+                emg_fp.write(f"{timestamp}," + ",".join(f"{v:.6f}" for v in emg_data) + "\n")
+                aux_fp.write(f"{timestamp}," + ",".join(f"{v:.6f}" for v in aux_data) + "\n")
+
+                
+
 
     def close(self):
         self.stop_stream()

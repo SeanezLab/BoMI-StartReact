@@ -125,34 +125,53 @@ class MultichannelBuffer:
 
 
 class DelsysBuffer:
-    """Manage data for all Delsys EMG sensors"""
-
-    def __init__(self, bufsize: int, savedir: Path):
+    def __init__(self, bufsize: int, savedir: Path, sample_rate: float = None):
         self.bufsize = bufsize
-
-        # 1D array of timestamps
         self.timestamp: np.ndarray = np.zeros(bufsize)
+        self.data: np.ndarray = np.zeros((bufsize, 16))  # Up to 16 sensors
+        self.sensor_fp = open(savedir / "trigno_emg.csv", "w")
+        self.sensor_fp.write("Timestamp," + ",".join([f"emg_sensor_{i+1}" for i in range(16)]) + "\n")
+        self.sample_rate = sample_rate  # Store the sample rate if needed
 
-        # 2D array of `labels`
-        self.data: np.ndarray = np.zeros((bufsize, 16))
-
-    def add_packet(self, packet: Tuple[float, ...]):
-        # assert len(packet) == 16
-
-        # Shift buffer when full, never changing buffer size
+    def add_packet(self, timestamp, packet: Tuple[float, ...]):
         self.data[:-1] = self.data[1:]
         self.data[-1] = packet
         self.timestamp[:-1] = self.timestamp[1:]
-        self.timestamp[-1] = default_timer()
+        self.timestamp[-1] = timestamp
+        self.file.write(f"{timestamp}," + ",".join(map(str, packet)) + "\n")
 
-    def add_packets(self, packets: np.ndarray):
-        n = len(packets)
+    def __del__(self):
+        """Close open file pointers"""
+        if hasattr(self, 'sensor_fp'):
+            self.sensor_fp.close()
 
-        self.data[:-n] = self.data[n:]
-        self.data[-n:] = packets
-        self.timestamp[:-n] = self.timestamp[n:]
-        self.timestamp[-n:] = [default_timer()] * n
+    def add_packets(self, emg_data, timestamps):
+        num_packets = len(emg_data)
+        self.data[:-num_packets] = self.data[num_packets:]
+        self.data[-num_packets:] = emg_data
 
+        self.timestamp[:-num_packets] = self.timestamp[num_packets:]
+        self.timestamp[-num_packets:] = timestamps
+
+class AUXBuffer:
+    """Manage AUX sensor data sampled at 74 Hz."""
+
+    def __init__(self, bufsize: int, savedir: Path):
+        self.bufsize = bufsize
+        self.timestamp: np.ndarray = np.zeros(bufsize)
+        self.data: np.ndarray = np.zeros((bufsize, 16 * 4))  # 16 sensors, 4 AUX channels each
+        self.file = open(savedir / "trigno_aux.csv", "w")
+        self.file.write("Timestamp," + ",".join([f"aux{i}_{j+1}" for j in range(16) for i in range(1, 5)]) + "\n")
+
+    def add_packet(self, timestamp, packet: Tuple[float, ...]):
+        self.data[:-1] = self.data[1:]
+        self.data[-1] = packet
+        self.timestamp[:-1] = self.timestamp[1:]
+        self.timestamp[-1] = timestamp
+        self.file.write(f"{timestamp}," + ",".join(map(str, packet)) + "\n")
+
+    def __del__(self):
+        self.file.close()
 
 if __name__ == "__main__":
     from dis import dis

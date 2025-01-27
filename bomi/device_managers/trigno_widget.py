@@ -63,7 +63,8 @@ class EMGScope(qw.QWidget, WindowMixin):
 
         ### init data
         self.queue: Queue[Tuple[float]] = Queue()
-        self.buffer: DelsysBuffer = DelsysBuffer(10000, self.savedir)
+        self.buffer = DelsysBuffer(bufsize=10000, savedir=self.savedir, sample_rate=self.dm.emg_sample_rate)
+
 
         ### init UI
         main_layout = qw.QHBoxLayout(self)
@@ -177,12 +178,30 @@ class EMGScope(qw.QWidget, WindowMixin):
         q = self.queue
         qsize = q.qsize()
 
-        if qsize:
-            self.buffer.add_packets(np.array([q.get() for _ in range(qsize)]))
+        if qsize > 0:
+            # Retrieve all available data and unpack timestamps and EMG data
+            data = [q.get() for _ in range(qsize)]
+            timestamps, emg_data = zip(*data)
 
+            # Find the max length to ensure all arrays are consistent
+            max_length = max(len(e) for e in emg_data)
+
+            # Pad or truncate each sample to match the expected size
+            def pad_or_truncate(sample, size):
+                if len(sample) < size:
+                    return np.pad(sample, (0, size - len(sample)), mode='constant')
+                return sample[:size]
+
+            emg_data = np.array([pad_or_truncate(e, max_length) for e in emg_data])
+
+            # Update the buffer
+            self.buffer.add_packets(emg_data, np.array(timestamps))
+
+        # Calculate the x-axis time relative to now
         now = default_timer()
         x = -(now - self.buffer.timestamp)
         y = self.buffer.data
+
         for idx in range(1, 17):
             sensor = self.dm.sensors[idx]
             if not sensor:
@@ -190,6 +209,7 @@ class EMGScope(qw.QWidget, WindowMixin):
 
             handle = self.plot_handles[idx]
             handle.curve.setData(x=x, y=y[:, idx - 1])
+
 
 
 class TrignoSensor(qw.QWidget):
