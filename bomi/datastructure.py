@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -16,6 +17,12 @@ def get_savedir(data_root: Path, task_name: str, mkdir=True) -> Path:
     if mkdir:
         savedir.mkdir(parents=True, exist_ok=True)
     return savedir
+
+
+class TaskType(Enum):
+    REST = "Rest Task"
+    ACTIVE = "Active Task"
+    REPETITION = "Repetition Task"
 
 
 @dataclass
