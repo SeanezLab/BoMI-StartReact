@@ -16,7 +16,7 @@ from pyqtgraph.parametertree.parameterTypes import ActionParameter
 from pyqtgraph.parametertree.parameterTypes.basetypes import Parameter
 
 from bomi.base_widgets import TaskEvent, TaskDisplay, generate_edit_form
-from bomi.datastructure import MultichannelBuffer, SubjectMetadata, Packet
+from bomi.datastructure import MultichannelBuffer, SubjectMetadata, Packet, TaskType
 from bomi.device_managers.protocols import (
     SupportsStreaming,
     SupportsGetSensorMetadata,
@@ -685,13 +685,21 @@ class ScopeWidget(qw.QWidget):
             layout.addWidget(self.task_widget, 1)
 
             def _trial_begin():
-                if not self.task_widget.is_rest:
+                if self.task_widget.task_type == TaskType.ACTIVE:
                     self.task_widget.sigColorRegion.emit("target", True)
                     self.task_widget.sigColorRegion.emit("prep", False)
-                else:
+                    self.flash(bcolors.GREEN)
+
+                elif self.task_widget.task_type == TaskType.REST:
                     self.task_widget.sigColorRegion.emit("target", True)
                     self.task_widget.sigColorRegion.emit("base", False)
-                self.flash(bcolors.GREEN)
+                    self.flash(bcolors.GREEN)
+
+                else: 
+                    self.task_widget.sigColorRegion.emit("target", True)
+                    self.task_widget.sigColorRegion.emit("base", False)
+                    self.flash("white")
+
 
             def _trial_end():
                 pass

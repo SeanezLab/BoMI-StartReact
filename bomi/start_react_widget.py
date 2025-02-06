@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtCore import Signal
 
 from bomi.base_widgets import TaskDisplay, TaskEvent, generate_edit_form, wrap_gb, ConfirmationDialog
-from bomi.datastructure import MultichannelBuffer, get_savedir
+from bomi.datastructure import TaskType
 from bomi.device_managers.protocols import SupportsHasSensors, HasDiscoverDevicesSignal, SupportsGetChannelMetadata
 from bomi.scope_widget import ScopeConfig, ScopeWidget
 from bomi.window_mixin import WindowMixin
@@ -105,21 +105,28 @@ class SRDisplay(TaskDisplay, WindowMixin):
     BTN_END_TXT = "End task"
 
 
-    def __init__(self, task_name: str, savedir: Path, selected_channel: str, config: SRConfig, is_rest: bool):
+    def __init__(self, task_type: TaskType, savedir: Path, selected_channel: str, config: SRConfig):
         "task_name will be displayed at the top of the widget"
         super().__init__(selected_channel)
         self.config = config
         self.savedir = savedir
 
+        self.task_type = task_type
         # Bool used to determine task set up (rest vs. active task)
-        self.is_rest = is_rest
+        # self.is_rest = is_rest
 
         # Rest timer is only used in active tasks (to avoid muscle fatigue)
-        if not self.is_rest:
+        if self.task_type == TaskType.ACTIVE:
             self.rest_timer = qc.QTimer()
             self.rest_timer.setSingleShot(True)
             self.rest_timer.timeout.connect(self.rest_timeout) 
             self.rest_timer.setInterval(self.config.REST_TIME*1000)
+
+        elif self.task_type == TaskType.REPETITION:
+            self.hold_timer = qc.QTimer()
+            self.hold_timer.setSingleShot(True)
+            self.hold_timer.timeout.connect(self.hold_timeout)
+            self.hold_timer.setInterval(2000)
 
         # filepointer to write task history
         self.task_history = open(savedir / "task_history.txt", "w")
@@ -131,7 +138,7 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.setAutoFillBackground(True)
 
         # Top label
-        self.top_label = qw.QLabel(task_name)
+        self.top_label = qw.QLabel(self.task_type.value)
         self.top_label.setFont(qg.QFont("Arial", 18))
         main_layout.addWidget(
             self.top_label, 0, 0, alignment=Qt.AlignTop | Qt.AlignLeft
@@ -181,6 +188,10 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.flex_timer = qc.QTimer()
         self.flex_timer.setSingleShot(True)
         self.flex_timer.timeout.connect(self.flex_timeout)  # type: ignore
+
+        self.repetition_timer_one_trial_end = qc.QTimer()
+        self.repetition_timer_one_trial_end.setSingleShot(True)
+        self.repetition_timer_one_trial_end.timeout.connect(self.repetition_one_trial_end)  # 
 
         def _init_tone(tone_player: TonePlayer):
             tone_player.effect.setVolume(0)  # not sure why still hear this
@@ -270,6 +281,15 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.sigFlash.emit("white")
         self.set_state(self.PREP)
 
+    @qc.Slot()
+    def hold_timeout(self):
+        """This method is called when the hold_timer times out.
+        (repetition task only)
+        """
+        self.sigColorRegion.emit("target", False)
+        self.sigColorRegion.emit("base", False)
+        self.sigFlash.emit("white")
+        self.set_state(self.REST)
 
     @qc.Slot()  # type: ignore
     def one_trial_end(self):
@@ -285,7 +305,22 @@ class SRDisplay(TaskDisplay, WindowMixin):
 
         if not self._trials_left:
             self.end_block()
-    
+
+    @qc.Slot()
+    def repetition_one_trial_end(self):
+        """Execute clean up after a repetition task trial
+        If there are more cycles remaining, schedule one more
+        """
+
+        self.emit_end()
+        self.set_state(self.GO)
+        self.sigColorRegion.emit("target", False)
+        self.sigColorRegion.emit("base", True)
+        self.sigFlash.emit("white")
+
+        if not self._trials_left:
+            self.end_block()
+
     @qc.Slot() # type: ignore
     def flex_timeout(self):
         self.set_state(self.GO)
@@ -304,20 +339,28 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.start_stop_btn.setText(self.BTN_END_TXT)
         self.progress_bar.setValue(0)
 
-        self._trials_left = []
-        self._trials_left += [self.send_visual_signal] * self.config.N_TRIALS
-        self._trials_left += [self.send_visual_auditory_signal] * self.config.N_TRIALS
-        self._trials_left += [self.send_visual_startling_signal] * self.config.N_TRIALS
-        random.shuffle(self._trials_left)
-        random.shuffle(self._trials_left)
+        if self.task_type == TaskType.REPETITION:
+            self._trials_left = []
+            self._trials_left += [self.send_visual_signal] * self.config.N_TRIALS
+        else:
+            self._trials_left = []
+            self._trials_left += [self.send_visual_signal] * self.config.N_TRIALS
+            self._trials_left += [self.send_visual_auditory_signal] * self.config.N_TRIALS
+            self._trials_left += [self.send_visual_startling_signal] * self.config.N_TRIALS
+            random.shuffle(self._trials_left)
+            random.shuffle(self._trials_left)
 
-        if self.is_rest:
+        if self.task_type == TaskType.REST:
             self.timer_one_trial_begin.start(self.get_random_wait_time())
             self.sigColorRegion.emit("base", True)
             self.sigFlash.emit("white")
-        else:
+        elif self.task_type == TaskType.ACTIVE:
             self.set_state(self.PREP)
             self.sigColorRegion.emit("prep", True)
+            self.sigFlash.emit("white")
+        else:
+            self.set_state(self.GO)
+            self.sigColorRegion.emit("base", True)
             self.sigFlash.emit("white")
 
     def end_block(self):
@@ -350,7 +393,7 @@ class SRDisplay(TaskDisplay, WindowMixin):
         ### TaskEvent indicates what event has occured most recently
         """Receive task events from the ScopeWidget"""
         # Rest Task
-        if self.is_rest:
+        if self.task_type == TaskType.REST:
             if event == TaskEvent.ENTER_TARGET:
                 if self.curr_state == self.GO and not self.timer_one_trial_end.isActive():
                     self.one_trial_end()
@@ -372,7 +415,7 @@ class SRDisplay(TaskDisplay, WindowMixin):
                 self.timer_one_trial_begin.stop()
     
         # Active Task       
-        else:
+        elif self.task_type == TaskType.ACTIVE:
             # Enter prep from base
             if event == TaskEvent.ENTER_PREP and self.curr_state == self.PREP:
                 if self._trials_left:
@@ -402,6 +445,34 @@ class SRDisplay(TaskDisplay, WindowMixin):
 
             elif event == TaskEvent.EXIT_BASE and self.rest_timer.isActive():
                 self.rest_timer.stop()
+
+        else:
+            hold_timer = 500 # duration to stay in target region (ms)
+            trial_timer = 500 # duration to stay in base region (ms)
+            rest_timer = 2000 # duration to stay in rest zone (ms)
+
+            if event == TaskEvent.ENTER_BASE:
+                if self.curr_state == self.GO or self.curr_state == self.SUCCESS:
+                    self.timer_one_trial_begin.start(trial_timer)
+                elif self.curr_state == self.REST:
+                    if self.repetition_timer_one_trial_end.isActive():
+                        self.repetition_timer_one_trial_end.stop()
+
+            elif event == TaskEvent.EXIT_BASE:
+                if self.timer_one_trial_begin.isActive():
+                    self.timer_one_trial_begin.stop()
+
+            elif event == TaskEvent.ENTER_TARGET:
+                if self.curr_state == self.GO:
+                    self.hold_timer.start(hold_timer)
+                elif self.repetition_timer_one_trial_end.isActive():
+                    self.repetition_timer_one_trial_end.stop()
+
+            elif event == TaskEvent.EXIT_TARGET:
+                if self.hold_timer.isActive():
+                    self.hold_timer.stop()
+                elif self.curr_state == self.REST:
+                    self.repetition_timer_one_trial_end.start(rest_timer)
 
     def emit_begin(self, event_name: str):
         self.sigTrialBegin.emit()
@@ -577,6 +648,10 @@ class StartReactWidget(qw.QWidget, WindowMixin):
         btn1.clicked.connect(self.s_active_task)  # type: ignore
         actions_layout.addWidget(btn1)
 
+        repetition_btn = qw.QPushButton(text="Repetition")
+        repetition_btn.clicked.connect(self.s_repetition_task)
+        actions_layout.addWidget(repetition_btn)
+
         self._scope_widget = None
 
     def fill_select_sensor_combo_box(self):
@@ -617,10 +692,14 @@ class StartReactWidget(qw.QWidget, WindowMixin):
 
         return True
 
-    def run_startreact(self, task_name: str, file_suffix: str, is_rest: bool):
+    def run_startreact(self,
+                       task_type: TaskType,
+                       file_suffix: str):
         """
         Common code for the precision and max ROM tasks
         """
+        task_name = task_type.value
+
         if not self.check_sensors():
             return
 
@@ -636,7 +715,7 @@ class StartReactWidget(qw.QWidget, WindowMixin):
             show_scope_params=True,
             target_show=True,
             target_range=self.target_range,
-            prepared_show= not is_rest,
+            prepared_show= task_type == TaskType.ACTIVE,
             prepared_range=self.prepared_range,
             base_show=True,
             base_range=self.base_range,
@@ -651,7 +730,7 @@ class StartReactWidget(qw.QWidget, WindowMixin):
                 selected_sensor_name=self.selected_sensor_name,
                 savedir=savedir,
                 subject_id = self.save_dir.parts[-2],
-                task_widget=SRDisplay(task_name, savedir, self.selected_channel_name, self.config, is_rest=is_rest),
+                task_widget=SRDisplay(task_type, savedir, self.selected_channel_name, self.config),
                 config=scope_config,
                 trigno_client=self.trigno_client,
             )
@@ -694,9 +773,8 @@ class StartReactWidget(qw.QWidget, WindowMixin):
         """
         self.prompt_for_task_dir_name()
         self.run_startreact(
-            "Rest Task",
-            self.get_task_suffix(is_rest=True),
-            is_rest=True
+            TaskType.REST,
+            self.get_task_suffix(is_rest=True)
         )
 
     def s_active_task(self):
@@ -705,10 +783,22 @@ class StartReactWidget(qw.QWidget, WindowMixin):
         """
         self.prompt_for_task_dir_name()
         self.run_startreact(
-            "Active Task",
-            self.get_task_suffix(is_rest=False),
-            is_rest=False
+            TaskType.ACTIVE,
+            self.get_task_suffix(is_rest=False)
         )
+
+    def s_repetition_task(self):
+        self.timepoint = "Repetition"
+        self.muscle = "-"
+
+        self.run_startreact(
+            TaskType.REPETITION,
+            self.get_repetition_suffix()
+        )
+
+    def get_repetition_suffix(self):
+        datestr = datetime.now().strftime("%Y-%m-%d %H-%M-%S-%f")
+        return Path(f"Repetition_{datestr}")
 
     def get_task_suffix(self, is_rest=False):
         datestr = datetime.now().strftime("%Y-%m-%d %H-%M-%S-%f")
