@@ -77,6 +77,17 @@ def recv_sz(sock: socket.socket, sz: int) -> bytes:
         buf += sock.recv(sz - len(buf))
     return buf
 
+def recv_aux(sock: socket.socket) -> bytes:
+    """
+    Receive one AUX port fram as raw bytes.
+    
+    The AUX port has 144 data channels, each data value is a 4 byte float.
+
+    Returns:
+        bytes: Raw frame data (576 bytes)
+    """
+    return recv_sz(sock, 4 * 144)
+
 
 class TrignoClient:
     """
@@ -96,7 +107,8 @@ class TrignoClient:
         "sensor_meta",
         "start_time",
         "_done_streaming",
-        "_worker_thread",
+        "_emg_worker_thread",
+        "_imu_worker_thread",
         "backwards_compatibility",
         "upsampling",
         "frame_interval",
@@ -107,6 +119,7 @@ class TrignoClient:
         "endianness",
         "base_firmware",
         "base_serial",
+        "mode",
     )
 
     AVANTI_MODES = AVANTI_MODES
@@ -114,6 +127,8 @@ class TrignoClient:
     def __init__(self, host_ip: str = IP_ADDR):
         self.connected = False
         self.host_ip = host_ip
+        self.mode = 67
+
         self._init_state()
 
         # Initialize all attributes that might be accessed later
@@ -131,7 +146,9 @@ class TrignoClient:
     def _init_state(self):
         self.command_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.emg_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        if self.mode == 67:
+            self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         self.sensors: List[EMGSensor | None] = [None] * 17  # use 1 indexing
         self.sensor_idx: List[int] = []
@@ -141,7 +158,8 @@ class TrignoClient:
 
         self.start_time = 0.0
         self._done_streaming = threading.Event()
-        self._worker_thread: threading.Thread | None = None
+        self._emg_worker_thread: threading.Thread | None = None
+        self._imu_worker_thread: threading.Thread | None = None
 
     def __call__(self, cmd: str):
         return self.send_cmd(cmd)
@@ -165,8 +183,10 @@ class TrignoClient:
         self.stop_stream()
         self.command_sock.close()
         self.emg_data_sock.close()
+
         if hasattr(self, 'aux_data_sock'):
             self.aux_data_sock.close()
+
         self._init_state()
         self.connected = False
         _print("Disconnected")
@@ -176,7 +196,6 @@ class TrignoClient:
             try:
                 self.command_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.emg_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
                 self.command_sock.settimeout(1)
                 self.command_sock.connect((self.host_ip, COMMAND_PORT))
@@ -185,7 +204,10 @@ class TrignoClient:
                 _print(buf.decode())
 
                 self.emg_data_sock.connect((self.host_ip, EMG_DATA_PORT))
-                self.aux_data_sock.connect((self.host_ip, AUX_DATA_PORT))
+
+                if self.mode == 67:
+                    self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.aux_data_sock.connect((self.host_ip, AUX_DATA_PORT))
 
                 self.connected = True
             except TimeoutError as e:
@@ -201,11 +223,8 @@ class TrignoClient:
         if response != "OK":
             _print(f"Warning: BACKWARDS COMPATIBILITY OFF command returned '{response}'")
 
-        # Retrieve the correct frame interval and calculate rates based on mode 67
+        # Retrieve the correct frame interval and calculate rates based on mode
         self.frame_interval = float(cmd("FRAME INTERVAL?"))
-
-        self.emg_sample_rate = 1482  # Fixed sampling rate for EMG
-        self.aux_sample_rate = 74  # Fixed sampling rate for AUX data (orientation)
 
         self.endianness = cmd("ENDIANNESS?")
         self.base_firmware = cmd("BASE FIRMWARE?")
@@ -227,7 +246,7 @@ class TrignoClient:
             return
 
         _type = cmd(f"SENSOR {i} TYPE?")
-        res = cmd(f"SENSOR {i} SETMODE 67")  # Change mode to 67
+        res = cmd(f"SENSOR {i} SETMODE {self.mode}")  # Change mode to 67
         _mode = int(cmd(f"SENSOR {i} MODE?"))
 
         _serial = cmd(f"SENSOR {i} SERIAL?")
@@ -287,7 +306,9 @@ class TrignoClient:
 
     def stop_stream(self):
         self._done_streaming.set()
-        self._worker_thread and self._worker_thread.join()
+        self._emg_worker_thread and self._emg_worker_thread.join()
+        if self._imu_worker_thread:
+            self._imu_worker_thread and self._imu_worker_thread.join()
         if self.connected:
             self.send_cmd("STOP")
 
@@ -298,16 +319,10 @@ class TrignoClient:
         buf = recv_sz(self.emg_data_sock, 4 * 16)  # 16 devices, 4 byte float
         return struct.unpack("<ffffffffffffffff", buf)
 
-    def recv_aux(self) -> Tuple[float, ...]:
+    def recv_imu(self) -> Tuple[float, ...]:
         """Receive one AUX frame from the sensor."""
-        if not hasattr(self, 'aux_data_sock') or not self.aux_data_sock:
-            raise ConnectionError("AUX data socket is not connected.")
-
-        # Each sensor provides 4 channels of AUX data at 32-bit (4 bytes each)
-        packet_size = 4 * (self.n_sensors * 4)  # 4 bytes per value, 4 values per sensor
-
-        buf = recv_sz(self.aux_data_sock, packet_size)
-        return struct.unpack(f"<{4 * self.n_sensors}f", buf)
+        buf = recv_aux(self.aux_data_sock)
+        return struct.unpack(f"<{'f' * 144}", buf)
 
     def handle_stream(self, queue: Queue[Tuple[float]], savedir: Path):
         """
@@ -318,32 +333,52 @@ class TrignoClient:
         assert self.connected
         self.start_stream()
         self.save_meta(savedir / "trigno_meta.json")
-        self._worker_thread = threading.Thread(
-            target=self.stream_worker, args=(queue, savedir)
+
+        self._emg_worker_thread = threading.Thread(
+            target=self.emg_stream_worker,
+            args=(queue, savedir)
         )
-        self._worker_thread.start()
+        
+        if self.mode == 67:
+            self._imu_worker_thread = threading.Thread(
+                target=self.imu_stream_worker,
+                args=(savedir,)
+            )
+            self._imu_worker_thread.start()
 
-    def stream_worker(self, queue: Queue[Tuple[float]], savedir: Path = None):
-        """Stream worker handling EMG and AUX data separately."""
+        self._emg_worker_thread.start()
 
-        with open(savedir / "trigno_emg.csv", "w") as emg_fp, open(savedir / "trigno_aux.csv", "w") as aux_fp:
+    def emg_stream_worker(self, queue: Queue[Tuple[float]], savedir: Path = None):
+        """Stream worker handling EMG data separately."""
+
+        with open(savedir / "trigno_emg.csv", "w") as emg_fp:
             while not self._done_streaming.is_set():
                 try:
                     emg_data = self.recv_emg()
-                    aux_data = self.recv_aux()
                     timestamp = default_timer()
                 except struct.error as e:
                     _print("Failed to parse packet", e)
                     continue
 
-                queue.put((timestamp, emg_data))  # Only EMG data goes to queue
+                queue.put((timestamp, emg_data)) 
 
-                # Save EMG and AUX data with correct floating point precision
+                # Save EMG data with correct floating point precision
                 emg_fp.write(f"{timestamp}," + ",".join(f"{v:.6f}" for v in emg_data) + "\n")
-                aux_fp.write(f"{timestamp}," + ",".join(f"{v:.6f}" for v in aux_data) + "\n")
 
-                
+    def imu_stream_worker(self, savedir: Path = None):
+        """Stream worker handling AUX data."""
 
+        with open(savedir / "trigno_aux.csv", "w") as imu_fp:
+            while not self._done_streaming.is_set():
+                try:
+                    imu_data = self.recv_imu()
+                    timestamp = default_timer()
+                except struct.error as e:
+                    _print("Failed to parse packet", e)
+                    continue
+
+                # Save AUX data with correct floating point precision
+                imu_fp.write(f"{timestamp}," + ",".join(f"{v:.6f}" for v in imu_data) + "\n")
 
     def close(self):
         self.stop_stream()

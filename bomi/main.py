@@ -110,6 +110,7 @@ class MainWindow(qw.QMainWindow, WindowMixin):
     def prompt_for_save_dir_name(self):
         confirmation_dialog = ConfirmationDialog(parent=self)
         confirmation_dialog.sig_save.connect(self.on_confirmation)
+        confirmation_dialog.sig_close.connect(self.closeEvent)
         confirmation_dialog.exec()
 
     def on_confirmation(self, save_dir: Path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import partial
 from typing import Callable, Dict, List, Tuple, TypeVar
+import PySide6.QtGui as qg
 import PySide6.QtWidgets as qw
 import PySide6.QtCore as qc
 from dataclasses import Field
@@ -280,6 +281,7 @@ def wrap_gb(name: str, *widgets: qw.QWidget):
 class ConfirmationDialog(qw.QDialog):
     sig_task = qc.Signal(str, str, bool)
     sig_save = qc.Signal(Path)
+    sig_close = qc.Signal(qg.QCloseEvent)
 
     def __init__(self, parent=None, is_task=False):
         super().__init__(parent)
@@ -377,6 +379,9 @@ class ConfirmationDialog(qw.QDialog):
             self.sig_save.emit(save_dir)
 
         super().accept() 
+
+    def reject(self):
+        self.sig_close.emit(qg.QCloseEvent)
 
     def select_directory(self):
         directory = qw.QFileDialog.getExistingDirectory(self, "Select Directory")

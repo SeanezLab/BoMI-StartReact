@@ -775,7 +775,7 @@ class ScopeWidget(qw.QWidget):
                 continue
             buffer.add_packet(packet)
 
-        # On successful read from queue, update curves
+        # On successful read from queue, update curves 
         now = default_timer()
         for name in self.dev_names:
             buf = self.buffers[name]

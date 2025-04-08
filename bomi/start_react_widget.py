@@ -66,7 +66,7 @@ class SRConfig:
         default=2, metadata=dict(range=(0, 10), name="Wait Max (s)")
     )  # msec
     N_TRIALS: int = field(
-        default=10, metadata=dict(range=(1, 40), name="No. Trials per cue")
+        default=10, metadata=dict(range=(1, 105), name="No. Trials per cue")
     )
 
     tone_duration: float = field(
@@ -123,10 +123,13 @@ class SRDisplay(TaskDisplay, WindowMixin):
             self.rest_timer.setInterval(self.config.REST_TIME*1000)
 
         elif self.task_type == TaskType.REPETITION:
-            self.hold_timer = qc.QTimer()
-            self.hold_timer.setSingleShot(True)
-            self.hold_timer.timeout.connect(self.hold_timeout)
-            self.hold_timer.setInterval(2000)
+            self.target_hold_timer = qc.QTimer()
+            self.target_hold_timer.setSingleShot(True)
+            self.target_hold_timer.timeout.connect(self.target_hold_timeout)
+
+            self.prep_hold_timer = qc.QTimer()
+            self.prep_hold_timer.setSingleShot(True)
+            self.prep_hold_timer.timeout.connect(self.prep_hold_timeout)
 
         # filepointer to write task history
         self.task_history = open(savedir / "task_history.txt", "w")
@@ -282,14 +285,23 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.set_state(self.PREP)
 
     @qc.Slot()
-    def hold_timeout(self):
-        """This method is called when the hold_timer times out.
+    def target_hold_timeout(self):
+        """This method is called when the target_hold_timer times out.
         (repetition task only)
         """
         self.sigColorRegion.emit("target", False)
         self.sigColorRegion.emit("base", False)
+        self.sigColorRegion.emit("prep", True)
         self.sigFlash.emit("white")
-        self.set_state(self.REST)
+        # self.set_state(self.REST)
+
+    @qc.Slot()
+    def prep_hold_timeout(self):
+        self.sigColorRegion.emit("target", False)
+        self.sigColorRegion.emit("base", True)
+        self.sigColorRegion.emit("prep", False)
+        self.sigFlash.emit("white")
+        self.set_state(self.SUCCESS)
 
     @qc.Slot()  # type: ignore
     def one_trial_end(self):
@@ -315,6 +327,7 @@ class SRDisplay(TaskDisplay, WindowMixin):
         self.emit_end()
         self.set_state(self.GO)
         self.sigColorRegion.emit("target", False)
+        self.sigColorRegion.emit("prep", False)
         self.sigColorRegion.emit("base", True)
         self.sigFlash.emit("white")
 
@@ -354,13 +367,14 @@ class SRDisplay(TaskDisplay, WindowMixin):
             self.timer_one_trial_begin.start(self.get_random_wait_time())
             self.sigColorRegion.emit("base", True)
             self.sigFlash.emit("white")
+
         elif self.task_type == TaskType.ACTIVE:
             self.set_state(self.PREP)
             self.sigColorRegion.emit("prep", True)
             self.sigFlash.emit("white")
         else:
             self.set_state(self.GO)
-            self.sigColorRegion.emit("base", True)
+            self.sigColorRegion.emit("target", True)
             self.sigFlash.emit("white")
 
     def end_block(self):
@@ -446,14 +460,17 @@ class SRDisplay(TaskDisplay, WindowMixin):
             elif event == TaskEvent.EXIT_BASE and self.rest_timer.isActive():
                 self.rest_timer.stop()
 
+        # Repetition task
         else:
-            hold_timer = 500 # duration to stay in target region (ms)
-            trial_timer = 500 # duration to stay in base region (ms)
-            rest_timer = 2000 # duration to stay in rest zone (ms)
+            hold_duration = 250 # duration to stay in target region (ms)
+            trial_duration = 250 # duration to stay in base region (ms)
+            rest_duration = 2000 # duration to stay in rest zone (ms)
 
             if event == TaskEvent.ENTER_BASE:
-                if self.curr_state == self.GO or self.curr_state == self.SUCCESS:
-                    self.timer_one_trial_begin.start(trial_timer)
+                if self.curr_state == self.SUCCESS and self._trials_left:
+                    self.timer_one_trial_begin.start(trial_duration)
+                elif self.curr_state == self.SUCCESS and not self._trials_left:
+                    self.set_state(self.TASK_DONE)
                 elif self.curr_state == self.REST:
                     if self.repetition_timer_one_trial_end.isActive():
                         self.repetition_timer_one_trial_end.stop()
@@ -464,15 +481,30 @@ class SRDisplay(TaskDisplay, WindowMixin):
 
             elif event == TaskEvent.ENTER_TARGET:
                 if self.curr_state == self.GO:
-                    self.hold_timer.start(hold_timer)
+                    self.target_hold_timer.start(hold_duration)
                 elif self.repetition_timer_one_trial_end.isActive():
                     self.repetition_timer_one_trial_end.stop()
 
             elif event == TaskEvent.EXIT_TARGET:
-                if self.hold_timer.isActive():
-                    self.hold_timer.stop()
+                if self.target_hold_timer.isActive():
+                    self.target_hold_timer.stop()
                 elif self.curr_state == self.REST:
-                    self.repetition_timer_one_trial_end.start(rest_timer)
+                    self.repetition_timer_one_trial_end.start(rest_duration)
+
+            elif event == TaskEvent.ENTER_PREP:
+                if self.curr_state == self.GO:
+                    self.prep_hold_timer.start(hold_duration)
+                elif self.repetition_timer_one_trial_end.isActive():
+                    self.repetition_timer_one_trial_end.stop()
+
+            elif event == TaskEvent.EXIT_PREP:
+                print(self.curr_state)
+                print(self._trials_left)
+                if self.prep_hold_timer.isActive():
+                    self.prep_hold_timer.stop()
+                elif self.curr_state == self.REST:
+                    self.repetition_timer_one_trial_end.start(rest_duration)
+                
 
     def emit_begin(self, event_name: str):
         self.sigTrialBegin.emit()
@@ -715,7 +747,7 @@ class StartReactWidget(qw.QWidget, WindowMixin):
             show_scope_params=True,
             target_show=True,
             target_range=self.target_range,
-            prepared_show= task_type == TaskType.ACTIVE,
+            prepared_show= task_type in (TaskType.ACTIVE, TaskType.REPETITION),
             prepared_range=self.prepared_range,
             base_show=True,
             base_range=self.base_range,
