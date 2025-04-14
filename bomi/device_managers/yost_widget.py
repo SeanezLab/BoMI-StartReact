@@ -83,6 +83,7 @@ class YostWidget(qw.QWidget, WindowMixin):
         super().__init__()
         self.yost_dm = yost_device_manager
         self.save_dir = save_dir
+        self.subject_id = self.save_dir.parts[-2]
         self.setWindowTitle("Yost devices")
         self.setMinimumSize(350, 200)
         self.setSizePolicy(qw.QSizePolicy.Expanding, qw.QSizePolicy.Fixed)
@@ -180,7 +181,8 @@ class YostWidget(qw.QWidget, WindowMixin):
             self._sw = ScopeWidget(
                 self.yost_dm,
                 get_savedir(self.save_dir, "Scope"),
-                ScopeConfig({channel: True for channel in self.yost_dm.CHANNEL_LABELS})
+                self.subject_id,
+                ScopeConfig({channel: True for channel in self.yost_dm.CHANNEL_LABELS}),
             )
             self._sw.showMaximized()
         except Exception as e:

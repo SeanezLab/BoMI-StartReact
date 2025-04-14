@@ -127,7 +127,7 @@ class TrignoClient:
     def __init__(self, host_ip: str = IP_ADDR):
         self.connected = False
         self.host_ip = host_ip
-        self.mode = 67
+        self.mode = 40
 
         self._init_state()
 
@@ -147,7 +147,7 @@ class TrignoClient:
         self.command_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.emg_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-        if self.mode == 67:
+        if self.mode == 40:
             self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         self.sensors: List[EMGSensor | None] = [None] * 17  # use 1 indexing
@@ -205,7 +205,7 @@ class TrignoClient:
 
                 self.emg_data_sock.connect((self.host_ip, EMG_DATA_PORT))
 
-                if self.mode == 67:
+                if self.mode == 40:
                     self.aux_data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     self.aux_data_sock.connect((self.host_ip, AUX_DATA_PORT))
 
@@ -236,7 +236,8 @@ class TrignoClient:
     def query_device(self, i: int):
         """
         Checks for devices connected to the base and updates `self.sensors`.
-        Updates mode to 67 (1 EMG + 4 AUX channels).
+        # Updates mode to 67 (1 EMG + 4 AUX channels).
+        Updates mode to 40 (1 EMG + 4 AUX channels).
         """
         assert self.connected
 
