@@ -63,7 +63,7 @@ class QtmDeviceManager(QObject):
         super().__init__()
         self.qtm_streaming = False
         self.all_channels = []
-        self.qtm_ip = '10.229.96.105'  # connect to QLineEdit input of Biodex Widget
+        self.qtm_ip = '10.229.96.167'  # connect to QLineEdit input of Biodex Widget
         self.port = 22223
         self.version = '1.22'
         self._done_streaming = Event()

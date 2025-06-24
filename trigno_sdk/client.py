@@ -57,7 +57,7 @@ EMG_DATA_PORT = 50043  # sends EMG and primary non-EMG data
 AUX_DATA_PORT = 50044  # sends auxiliary data
 
 # IP_ADDR = "10.229.96.239"
-IP_ADDR = "10.229.96.105"
+IP_ADDR = "10.229.96.167"
 
 
 def _print(*args, **kwargs):
