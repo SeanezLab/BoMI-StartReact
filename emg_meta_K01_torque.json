@@ -1,0 +1,70 @@
+{
+  "SID-65798": {
+    "muscle_name": "VL (Vastus Lateralis)",
+    "side": "L"
+  },
+  "SID-65636": {
+    "muscle_name": "VL (Vastus Lateralis)",
+    "side": "R"
+  },
+  "SID-65544": {
+    "muscle_name": "TA (Tibialis Anterior)",
+    "side": "L"
+  },
+  "SID-65666": {
+    "muscle_name": "TA (Tibialis Anterior)",
+    "side": "R"
+  },
+  "SID-65794": {
+    "muscle_name": "RF (Rectus Femoris)",
+    "side": "L"
+  },
+  "SID-65665": {
+    "muscle_name": "RF (Rectus Femoris)",
+    "side": "R"
+  },
+  "SID-65635": {
+    "muscle_name": "ST (Semitendinosus)",
+    "side": "R"
+  },
+  "SID-65658": {
+    "muscle_name": "RF (Rectus Femoris)",
+    "side": "R"
+  },
+  "SID-65675": {
+    "muscle_name": "RF (Rectus Femoris)",
+    "side": "L"
+  },
+  "SID-68888": {
+    "muscle_name": "SCM (Sternocleidomastoid)",
+    "side": "L"
+  },
+  "SID-65632": {
+    "muscle_name": "ST (Semitendinosus)",
+    "side": "L"
+  },
+  "SID-68896": {
+    "muscle_name": "SCM (Sternocleidomastoid)",
+    "side": "L"
+  },
+  "SID-65776": {
+    "muscle_name": "MG (Gastrocnemius Med)",
+    "side": "L"
+  },
+  "SID-65786": {
+    "muscle_name": "MG (Gastrocnemius Med)",
+    "side": "R"
+  },
+  "SID-65809": {
+    "muscle_name": "SL (Soleus)",
+    "side": "L"
+  },
+  "SID-65806": {
+    "muscle_name": "SL (Soleus)",
+    "side": "R"
+  },
+  "SID-68554": {
+    "muscle_name": "Trigger",
+    "side": ""
+  }
+}
